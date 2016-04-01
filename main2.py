@@ -1,44 +1,17 @@
 import re
 from cgi import escape
 from wsgiref.simple_server import make_server
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs
 from io import StringIO
 import http.client
-
-
-def index(environ, start_response):
-    """This function will be mounted on "/" and display a link
-    to the hello world page."""
-    start_response('200 OK', [('Content-Type', 'text/html')])
-    return [b'''Hello World Application
-               This is the Hello World application:continue <hello/>''']
-
-
-def hello(environ, start_response):
-    """Like the example above, but it uses the name specified in the
-URL."""
-    # get the name from the url if it was specified there.
-    args = environ['myapp.url_args']
-    if args:
-        subject = escape(args[0])
-    else:
-        subject = 'World'
-    start_response('200 OK', [('Content-Type', 'text/html')])
-    resp = "Hello %s!" % subject
-    return [resp.encode("utf-8")]
-
-
-def not_found(environ, start_response):
-    """Called if no URL matches."""
-    start_response('404 NOT FOUND', [('Content-Type', 'text/plain')])
-    return [b'Not Found']
-
 
 
 class WebController(object):    
     allowed_methods = ("get", "post")
 
-    def __init__(self):
+    def __init__(self, settings):
+        if settings:
+            [setattr(self, name, value) for name, value in settings.items()]
         pass
 
     def handle(self, request):
@@ -51,11 +24,10 @@ class WebController(object):
     def finish(self, response):
         def wsgi_resp(environ, start_response):
             headers = list(response.headers.items())
-            body = response.body.getvalue()
-            print(body)#.encode("utf-8").split("\n")
+            body = response.body.getvalue().encode("utf-8")
             response.body.close()
             start_response(response.status, headers)
-            return [body.encode("utf-8")]
+            return [body]
         return wsgi_resp
 
 
@@ -67,8 +39,8 @@ class WebResponse(object):
         self.body = StringIO()
 
     def add_header(self, header_dict):
-        item = header_dict.popitem()
-        self.headers[item[0]] = item[1]
+        key, val = header_dict.popitem()
+        self.headers[key] = val
         return
 
     def set_status(self, status_const):        
@@ -90,7 +62,7 @@ class WebRequest(object):
 
         if environ.get("QUERY_STRING"):
             querystr =  environ["QUERY_STRING"]
-            self.query = urlparse.parse_qs(querystr)
+            self.query = parse_qs(querystr)
         else:
             self.query = ""            
 
@@ -111,7 +83,7 @@ class WebRequest(object):
         return """%s %s %s %s""" % (self.method, self.path, self.headers, self.body)
     
     def match_url(self, regex):
-        match = re.search(regex, self.path)
+        match = regex.match(self.path)
         if match is not None:
             self.urlargs = match.groupdict()
             return True
@@ -123,44 +95,59 @@ class WebRequest(object):
 
 class WSGIApplication(object):
 
-    def __init__(self, handlers):
-        self.app = None
-        self.handlers = handlers
+    def __init__(self, handlers, settings=None):
+        self.settings = settings
+        self.handlers = [ (re.compile(pattern), callback) for pattern, callback in handlers]
 
     def __call__(self, environ, start_response):
         request = WebRequest(environ)
 
         for regex, callback in self.handlers:
             if request.match_url(regex):
-                instance = callback()
+                instance = callback(self.settings)
                 response = instance.handle(request)
                 return response(environ, start_response)
-        return not_found(environ, start_response)
+        return self.not_found(environ, start_response)
+
+    def not_found(self, environ, start_response):
+        """Called if no URL matches."""
+        start_response('404 NOT FOUND', [('Content-Type', 'text/plain')])
+        return [b'Not Found']
 
 
 class SimpleApp(WSGIApplication):
     def __init__(self):
-        # map urls to functions
+        # map urls to WebControllers
         urls = [
             (r'^/$', Index),
-            (r'/hello/$', hello),
-            (r'/hello/(?P<name>.+)$', hello)
+            (r'/hello/$', Hello),
+            (r'/hello/(?P<name>.+)$', Hello)
         ]
 
-        super(SimpleApp, self).__init__(urls)
+        settings = dict(
+                db = dict()
+            )
+
+        super(SimpleApp, self).__init__(urls, settings)
 
 
 class Index(WebController):
     def get(self, request):
         resp = request.get_response()
         resp.set_status(http.client.OK)
+        print(self.db)
         resp.write("hello world")
         return resp
+
+class Hello(WebController):
+    def get(self, request, name="World"):
+        response = request.get_response()
+        response.set_status(http.client.OK)
+        body = "Hello %s" % name
+        response.write(body)
+        return response
 
 if __name__ == '__main__':
     app = SimpleApp()
     serv = make_server("", 8080, app)
-    try:
-        serv.serve_forever()
-    except Exception:
-        serv.server_close()
+    serv.serve_forever()
