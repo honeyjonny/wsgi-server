@@ -23,7 +23,7 @@ class WebController(object):
 
     def finish(self, response):
         def wsgi_resp(environ, start_response):
-            headers = list(response.headers.items())
+            headers = [header for header in response.headers.items()]
             body = response.body.getvalue().encode("utf-8")
             response.body.close()
             start_response(response.status, headers)
